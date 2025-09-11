@@ -1,0 +1,114 @@
+services:
+  # Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: kmrl_postgres
+    environment:
+      POSTGRES_DB: kmrl_documents
+      POSTGRES_USER: kmrl_user
+      POSTGRES_PASSWORD: kmrl_password123
+      POSTGRES_HOST_AUTH_METHOD: md5
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+    networks:
+      - kmrl_network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kmrl_user -d kmrl_documents"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # AI Service (Python Flask)
+  ai-service:
+    build:
+      context: ../ai-service
+      dockerfile: Dockerfile
+    container_name: kmrl_ai_service
+    environment:
+      - FLASK_ENV=production
+      - DATABASE_URL=postgresql://kmrl_user:kmrl_password123@postgres:5432/kmrl_documents
+      - DEEPSEEK_API_KEY=${DEEPSEEK_API_KEY}
+      - OPENAI_BASE_URL=https://api.deepseek.com
+    ports:
+      - "5000:5000"
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - kmrl_network
+    volumes:
+      - ai_uploads:/app/uploads
+      - document_storage:/app/documents
+    restart: unless-stopped
+
+  # Backend (Spring Boot)
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    container_name: kmrl_backend
+    environment:
+      - SPRING_PROFILES_ACTIVE=docker
+      - SPRING_DATASOURCE_URL=jdbc:postgresql://postgres:5432/kmrl_documents
+      - SPRING_DATASOURCE_USERNAME=kmrl_user
+      - SPRING_DATASOURCE_PASSWORD=kmrl_password123
+      - AI_SERVICE_URL=http://ai-service:5000
+      - JWT_SECRET=mySecretKey123456789012345678901234567890
+      - JWT_EXPIRATION=86400000
+      - CORS_ALLOWED_ORIGINS=http://localhost:3000
+    ports:
+      - "8081:8081"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      ai-service:
+        condition: service_started
+    networks:
+      - kmrl_network
+    volumes:
+      - document_storage:/app/documents
+    restart: unless-stopped
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    container_name: kmrl_frontend
+    environment:
+      - REACT_APP_API_URL=http://localhost:8081/api
+      - REACT_APP_AI_SERVICE_URL=http://localhost:5000
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - kmrl_network
+    restart: unless-stopped
+
+  # Database Admin (Optional)
+  pgadmin:
+    image: dpage/pgadmin4
+    container_name: kmrl_pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@kmrl.com
+      PGADMIN_DEFAULT_PASSWORD: admin123
+    ports:
+      - "8080:80"
+    depends_on:
+      - postgres
+    networks:
+      - kmrl_network
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  ai_uploads:
+  document_storage:
+
+networks:
+  kmrl_network:
+    driver: bridge
