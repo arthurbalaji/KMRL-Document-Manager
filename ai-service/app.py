@@ -4,9 +4,13 @@ import json
 import traceback
 from datetime import datetime
 from typing import Dict, List, Tuple, Optional
+import base64
+import io
+import tempfile
+import uuid
 
 import requests
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, send_file, make_response
 from flask_cors import CORS
 import psycopg2
 from psycopg2.extras import RealDictCursor
@@ -20,6 +24,13 @@ from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from langdetect import detect, DetectorFactory
 import re
+import cv2
+import easyocr
+from googletrans import Translator
+import pdf2image
+import pdfplumber
+import fitz  # PyMuPDF
+from collections import defaultdict
 
 # Ensure consistent language detection
 DetectorFactory.seed = 0
@@ -42,6 +53,9 @@ if not deepseek_api_key:
     raise ValueError("DEEPSEEK_API_KEY is required")
 
 logger.info(f"Configuring DeepSeek V2 with API key: {deepseek_api_key[:10]}...")
+
+# Configure Tesseract path
+TESSERACT_CMD = os.getenv('TESSERACT_CMD', '/usr/bin/tesseract')
 
 # DeepSeek API configuration
 DEEPSEEK_BASE_URL = "https://api.deepseek.com/v1/chat/completions"
@@ -78,17 +92,390 @@ def call_deepseek_api(messages, max_tokens=4000, temperature=0.3):
         logger.error(f"DeepSeek API call failed: {str(e)}")
         return None
 
-# Test DeepSeek connectivity
-try:
-    test_response = call_deepseek_api([{"role": "user", "content": "Test connection"}], max_tokens=10)
-    if test_response:
-        logger.info("DeepSeek V2 API connection successful")
-    else:
-        logger.error("DeepSeek V2 API connection failed")
-        logger.warning("AI analysis will fall back to heuristic methods")
-except Exception as e:
-    logger.error(f"DeepSeek V2 API connection test failed: {str(e)}")
-    logger.warning("AI analysis will fall back to heuristic methods")
+# Initialize multilingual OCR and translation
+# Note: EasyOCR doesn't support Malayalam directly, so we'll use English only for EasyOCR
+# and fall back to Tesseract for Malayalam
+easyocr_reader = easyocr.Reader(['en'])  # English only for EasyOCR
+translator = Translator()
+
+# Configure Tesseract for Malayalam support (Tesseract supports Malayalam as 'mal')
+pytesseract.pytesseract.tesseract_cmd = TESSERACT_CMD
+
+class MultilingualDocumentProcessor:
+    def __init__(self):
+        self.extracted_images = {}  # Store extracted images by document ID
+        self.image_metadata = {}    # Store image metadata
+        
+    def extract_text_and_images_from_pdf(self, pdf_path: str, document_id: str) -> Dict:
+        """Extract both text and images from PDF with multilingual support"""
+        try:
+            result = {
+                'text_content': '',
+                'images': [],
+                'text_blocks': [],
+                'languages_detected': set(),
+                'page_count': 0
+            }
+            
+            # Method 1: Use PyMuPDF for comprehensive extraction
+            doc = fitz.open(pdf_path)
+            result['page_count'] = len(doc)
+            
+            for page_num in range(len(doc)):
+                page = doc.load_page(page_num)
+                
+                # Extract text
+                page_text = page.get_text()
+                if page_text.strip():
+                    result['text_content'] += f"\n--- Page {page_num + 1} ---\n"
+                    result['text_content'] += page_text
+                    
+                    # Detect language of this page
+                    try:
+                        lang = detect(page_text)
+                        result['languages_detected'].add(lang)
+                    except:
+                        pass
+                
+                # Extract images with enhanced filtering and quality improvement
+                image_list = page.get_images()
+                for img_index, img in enumerate(image_list):
+                    try:
+                        # Get image data
+                        xref = img[0]
+                        pix = fitz.Pixmap(doc, xref)
+                        
+                        # Skip very small images (likely decorative elements)
+                        if pix.width < 50 or pix.height < 50:
+                            pix = None
+                            continue
+                            
+                        # Skip images with low quality (too few pixels)
+                        if pix.width * pix.height < 10000:  # Less than 100x100 equivalent
+                            pix = None
+                            continue
+                        
+                        if pix.n - pix.alpha < 4:  # GRAY or RGB
+                            # Convert to higher quality PNG
+                            img_data = pix.tobytes("png")
+                            pil_image = Image.open(io.BytesIO(img_data))
+                            
+                            # Enhance image quality for better OCR
+                            enhanced_image = self.enhance_image_for_ocr(pil_image)
+                            
+                            # Save enhanced image as bytes
+                            img_buffer = io.BytesIO()
+                            enhanced_image.save(img_buffer, format='PNG', quality=95, optimize=True)
+                            enhanced_img_data = img_buffer.getvalue()
+                            
+                            # Generate unique image ID
+                            image_id = f"{document_id}_page{page_num + 1}_img{img_index + 1}"
+                            
+                            # Extract text from enhanced image using multilingual OCR
+                            image_text = self.extract_text_from_image(enhanced_image)
+                            
+                            # Calculate image quality metrics
+                            quality_score = self.calculate_image_quality(pil_image)
+                            
+                            # Get image coordinates on page
+                            img_rect = page.get_image_rects(xref)
+                            bbox = img_rect[0] if img_rect else None
+                            
+                            # Store image with enhanced metadata
+                            image_info = {
+                                'id': image_id,
+                                'page': page_num + 1,
+                                'data': base64.b64encode(enhanced_img_data).decode('utf-8'),
+                                'format': 'png',
+                                'width': enhanced_image.width,
+                                'height': enhanced_image.height,
+                                'quality_score': quality_score,
+                                'text_content': image_text['text'],
+                                'languages': image_text['languages'],
+                                'confidence': image_text['confidence'],
+                                'bbox': [bbox.x0, bbox.y0, bbox.x1, bbox.y1] if bbox else None,
+                                'file_size': len(enhanced_img_data),
+                                'original_size': len(img_data),
+                                'extraction_method': 'pymupdf_enhanced'
+                            }
+                            
+                            result['images'].append(image_info)
+                            
+                            # Add image text to main content with better formatting
+                            if image_text['text'].strip():
+                                result['text_content'] += f"\n\n[Image {image_id}]\n"
+                                result['text_content'] += f"Location: Page {page_num + 1}\n"
+                                result['text_content'] += f"Text: {image_text['text']}\n"
+                                result['text_content'] += f"Languages: {', '.join(image_text['languages'])}\n"
+                                result['languages_detected'].update(image_text['languages'])
+                        
+                        pix = None
+                    except Exception as e:
+                        logger.error(f"Error extracting image {img_index} from page {page_num}: {str(e)}")
+            
+            doc.close()
+            
+            # Method 2: Use pdfplumber for better text structure
+            try:
+                with pdfplumber.open(pdf_path) as pdf:
+                    for page_num, page in enumerate(pdf.pages):
+                        # Extract structured text blocks
+                        words = page.extract_words()
+                        for word in words:
+                            result['text_blocks'].append({
+                                'text': word['text'],
+                                'page': page_num + 1,
+                                'bbox': [word['x0'], word['top'], word['x1'], word['bottom']],
+                                'font': word.get('fontname', ''),
+                                'size': word.get('size', 0)
+                            })
+            except Exception as e:
+                logger.warning(f"pdfplumber extraction failed: {str(e)}")
+            
+            # Store extracted images in memory
+            self.extracted_images[document_id] = result['images']
+            
+            result['languages_detected'] = list(result['languages_detected'])
+            return result
+            
+        except Exception as e:
+            logger.error(f"PDF extraction error: {str(e)}")
+            return {
+                'text_content': '',
+                'images': [],
+                'text_blocks': [],
+                'languages_detected': ['en'],
+                'page_count': 0,
+                'error': str(e)
+            }
+    
+    def enhance_image_for_ocr(self, image):
+        """Enhance image quality for better OCR results"""
+        try:
+            # Convert to RGB if necessary
+            if image.mode != 'RGB':
+                image = image.convert('RGB')
+            
+            # Resize if too small (improve readability)
+            min_size = 300
+            if image.width < min_size or image.height < min_size:
+                scale = max(min_size / image.width, min_size / image.height)
+                new_width = int(image.width * scale)
+                new_height = int(image.height * scale)
+                image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
+            
+            # Enhance contrast and sharpness
+            from PIL import ImageEnhance
+            
+            # Enhance contrast
+            enhancer = ImageEnhance.Contrast(image)
+            image = enhancer.enhance(1.2)
+            
+            # Enhance sharpness
+            enhancer = ImageEnhance.Sharpness(image)
+            image = enhancer.enhance(1.1)
+            
+            return image
+        except Exception as e:
+            print(f"Error enhancing image: {e}")
+            return image
+
+    def calculate_image_quality(self, image):
+        """Calculate a quality score for the image"""
+        try:
+            # Basic quality metrics
+            width, height = image.size
+            pixel_count = width * height
+            
+            # Calculate aspect ratio reasonableness
+            aspect_ratio = max(width, height) / min(width, height)
+            aspect_score = max(0, 1 - (aspect_ratio - 1) / 10)  # Penalty for extreme ratios
+            
+            # Size score (larger images generally better for OCR)
+            size_score = min(1.0, pixel_count / 100000)  # Normalize to 100k pixels
+            
+            # Combine scores
+            quality_score = (aspect_score * 0.3 + size_score * 0.7)
+            
+            return round(quality_score, 3)
+        except Exception as e:
+            print(f"Error calculating image quality: {e}")
+            return 0.5
+    
+    def extract_text_from_image(self, image: Image.Image) -> Dict:
+        """Extract text from image using both Tesseract and EasyOCR with proper Malayalam support"""
+        result = {
+            'text': '',
+            'languages': [],
+            'confidence': 0
+        }
+        
+        try:
+            # Convert PIL Image to numpy array for OpenCV
+            image_array = np.array(image)
+            
+            # Method 1: Try Tesseract for Malayalam first
+            tesseract_text_ml = ''
+            tesseract_text_en = ''
+            
+            try:
+                # Try Malayalam with Tesseract (supports 'mal' language code)
+                tesseract_text_ml = pytesseract.image_to_string(image, lang='mal')
+                # Also try English
+                tesseract_text_en = pytesseract.image_to_string(image, lang='eng')
+            except Exception as e:
+                logger.warning(f"Tesseract failed: {str(e)}")
+            
+            # Method 2: EasyOCR for English (more accurate than Tesseract for English)
+            easyocr_text = ''
+            easyocr_confidence = 0
+            
+            try:
+                easyocr_results = easyocr_reader.readtext(image_array)
+                if easyocr_results:
+                    easyocr_text = ' '.join([item[1] for item in easyocr_results if item[2] > 0.5])
+                    easyocr_confidence = np.mean([item[2] for item in easyocr_results if item[2] > 0.5])
+            except Exception as e:
+                logger.warning(f"EasyOCR failed: {str(e)}")
+            
+            # Determine the best result
+            candidates = []
+            
+            # Add Malayalam result if substantial
+            if tesseract_text_ml.strip() and len(tesseract_text_ml.strip()) > 5:
+                candidates.append({
+                    'text': tesseract_text_ml,
+                    'languages': ['ml'],
+                    'confidence': 0.7,
+                    'source': 'tesseract_ml'
+                })
+            
+            # Add English results
+            if easyocr_text.strip():
+                candidates.append({
+                    'text': easyocr_text,
+                    'languages': ['en'],
+                    'confidence': easyocr_confidence,
+                    'source': 'easyocr_en'
+                })
+            
+            if tesseract_text_en.strip():
+                candidates.append({
+                    'text': tesseract_text_en,
+                    'languages': ['en'],
+                    'confidence': 0.6,
+                    'source': 'tesseract_en'
+                })
+            
+            # Choose the best candidate based on length and confidence
+            if candidates:
+                best_candidate = max(candidates, key=lambda x: len(x['text'].strip()) * x['confidence'])
+                result.update(best_candidate)
+                
+                # Additional language detection
+                try:
+                    detected_lang = detect(result['text'])
+                    if detected_lang not in result['languages']:
+                        result['languages'].append(detected_lang)
+                except:
+                    pass
+                
+                # Check for Malayalam characters
+                if any('\u0d00' <= char <= '\u0d7f' for char in result['text']):
+                    if 'ml' not in result['languages']:
+                        result['languages'].append('ml')
+            
+        except Exception as e:
+            logger.error(f"Image text extraction error: {str(e)}")
+            result['error'] = str(e)
+        
+        return result
+    
+    def translate_text(self, text: str, target_lang: str = 'en') -> str:
+        """Translate text to target language"""
+        try:
+            if not text.strip():
+                return text
+            
+            # Detect source language
+            detected = translator.detect(text)
+            
+            # Don't translate if already in target language
+            if detected.lang == target_lang:
+                return text
+            
+            # Translate
+            translated = translator.translate(text, dest=target_lang)
+            return translated.text
+            
+        except Exception as e:
+            logger.error(f"Translation error: {str(e)}")
+            return text  # Return original if translation fails
+    
+    def get_document_images(self, document_id: str) -> List[Dict]:
+        """Get all images for a document"""
+        return self.extracted_images.get(document_id, [])
+    
+    def find_relevant_images(self, document_id: str, query: str, language: str = 'en') -> List[Dict]:
+        """Find images relevant to a query with enhanced matching"""
+        images = self.get_document_images(document_id)
+        if not images:
+            return []
+        
+        relevant_images = []
+        
+        # Translate query to both languages for better matching
+        query_en = query if language == 'en' else self.translate_text(query, 'en')
+        query_ml = query if language == 'ml' else self.translate_text(query, 'ml')
+        
+        # Create expanded query words including synonyms
+        query_words = set()
+        for q in [query.lower(), query_en.lower(), query_ml.lower()]:
+            query_words.update(q.split())
+        
+        for image in images:
+            image_text = image.get('text_content', '').lower()
+            image_words = set(image_text.split())
+            
+            # Calculate multiple relevance factors
+            factors = []
+            
+            # 1. Direct word matching
+            common_words = query_words.intersection(image_words)
+            word_score = len(common_words) / max(len(query_words), 1) if query_words else 0
+            factors.append(word_score * 0.6)
+            
+            # 2. Substring matching for partial matches
+            substring_score = 0
+            for q_word in query_words:
+                if len(q_word) > 3:  # Only for meaningful words
+                    for i_word in image_words:
+                        if q_word in i_word or i_word in q_word:
+                            substring_score += 0.5
+            substring_score = min(substring_score / max(len(query_words), 1), 1.0)
+            factors.append(substring_score * 0.3)
+            
+            # 3. Quality bonus for high-quality images
+            quality_score = image.get('quality_score', 0.5)
+            factors.append(quality_score * 0.1)
+            
+            # Calculate final relevance score
+            relevance_score = sum(factors)
+            
+            # More lenient threshold for including images
+            if relevance_score > 0.05 or len(image_text.strip()) > 10:
+                image_copy = image.copy()
+                image_copy['relevance_score'] = round(relevance_score, 3)
+                relevant_images.append(image_copy)
+        
+        # Sort by relevance score
+        relevant_images.sort(key=lambda x: x['relevance_score'], reverse=True)
+        
+        # Return more images if available, prioritizing quality
+        return relevant_images[:8]  # Increased from 5 to 8
+
+# Initialize the multilingual processor
+doc_processor = MultilingualDocumentProcessor()
 
 # Database connection
 def get_db_connection():
@@ -478,23 +865,113 @@ def health_check():
 
 @app.route('/process-document', methods=['POST'])
 def process_document():
-    """Process uploaded document and return AI analysis."""
+    """Process uploaded document with multilingual text and image extraction"""
     try:
         data = request.json
         file_path = data.get('file_path')
         mime_type = data.get('mime_type')
+        document_id = data.get('document_id')
         
         if not file_path or not mime_type:
             return jsonify({'error': 'file_path and mime_type are required'}), 400
         
-        # Extract text
-        extracted_text = processor.extract_text_from_file(file_path, mime_type)
+        if not document_id:
+            document_id = str(uuid.uuid4())
+        
+        logger.info(f"Processing document {document_id} at path: {file_path}")
+        
+        # Check if file exists
+        if not os.path.exists(file_path):
+            return jsonify({'error': f'File not found: {file_path}'}), 404
+        
+        # Extract text and images based on file type
+        file_extension = os.path.splitext(file_path)[1].lower()
+        
+        if file_extension == '.pdf':
+            extraction_result = doc_processor.extract_text_and_images_from_pdf(file_path, document_id)
+            extracted_text = extraction_result['text_content']
+            extracted_images = extraction_result['images']
+            languages = extraction_result['languages_detected']
+            
+        elif file_extension in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
+            # Process single image
+            with Image.open(file_path) as img:
+                image_text = doc_processor.extract_text_from_image(img)
+                extracted_text = image_text['text']
+                languages = image_text['languages']
+                
+                # Convert image to base64 for storage
+                with open(file_path, 'rb') as img_file:
+                    img_data = base64.b64encode(img_file.read()).decode('utf-8')
+                
+                extracted_images = [{
+                    'id': f"{document_id}_main_image",
+                    'page': 1,
+                    'data': img_data,
+                    'format': file_extension[1:],
+                    'text_content': extracted_text,
+                    'languages': languages
+                }]
+                
+                doc_processor.extracted_images[document_id] = extracted_images
+                
+        elif file_extension in ['.doc', '.docx']:
+            # Process Word document
+            doc = Document(file_path)
+            extracted_text = '\n'.join([paragraph.text for paragraph in doc.paragraphs])
+            
+            # Extract images from Word document
+            extracted_images = []
+            for rel in doc.part.rels.values():
+                if "image" in rel.target_ref:
+                    try:
+                        image_data = rel.target_part.blob
+                        img = Image.open(io.BytesIO(image_data))
+                        image_text = doc_processor.extract_text_from_image(img)
+                        
+                        image_info = {
+                            'id': f"{document_id}_word_img_{len(extracted_images)}",
+                            'page': 1,
+                            'data': base64.b64encode(image_data).decode('utf-8'),
+                            'format': 'png',
+                            'text_content': image_text['text'],
+                            'languages': image_text['languages']
+                        }
+                        extracted_images.append(image_info)
+                        extracted_text += f"\n[Image Text]: {image_text['text']}"
+                    except Exception as e:
+                        logger.warning(f"Failed to extract image from Word doc: {str(e)}")
+            
+            doc_processor.extracted_images[document_id] = extracted_images
+            languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
+            
+        else:
+            # Fallback to original text extraction
+            extracted_text = processor.extract_text_from_file(file_path, mime_type)
+            extracted_images = []
+            languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
         
         if not extracted_text.strip():
-            return jsonify({'error': 'No text could be extracted from the document'}), 400
+            return jsonify({'error': 'No text content found in document'}), 400
+        
+        logger.info(f"Extracted {len(extracted_text)} characters and {len(extracted_images)} images")
+        logger.info(f"Languages detected: {languages}")
         
         # Generate AI analysis
         analysis = processor.generate_ai_analysis(extracted_text)
+        
+        # Add multilingual information to analysis
+        analysis['languages_detected'] = languages
+        analysis['images_extracted'] = len(extracted_images)
+        analysis['has_multilingual_content'] = len(languages) > 1
+        
+        # Generate Malayalam summary if Malayalam content detected
+        if 'ml' in languages and analysis.get('summary_en'):
+            try:
+                analysis['summary_ml'] = doc_processor.translate_text(analysis['summary_en'], 'ml')
+            except Exception as e:
+                logger.warning(f"Malayalam translation failed: {str(e)}")
+                analysis['summary_ml'] = ""
         
         # Generate embeddings
         embeddings = processor.generate_embeddings(extracted_text)
@@ -504,6 +981,9 @@ def process_document():
             'extracted_text': extracted_text,
             'analysis': analysis,
             'embeddings': embeddings,
+            'images': [{'id': img['id'], 'page': img['page'], 'text_content': img['text_content']} 
+                      for img in extracted_images],  # Don't return full image data in main response
+            'languages': languages,
             'processing_timestamp': datetime.now().isoformat()
         }
         
@@ -511,54 +991,135 @@ def process_document():
         
     except Exception as e:
         logger.error(f"Document processing error: {str(e)}")
+        logger.error(traceback.format_exc())
         return jsonify({'error': str(e)}), 500
 
 @app.route('/chat/document', methods=['POST'])
 def chat_with_document():
-    """Chat with a specific document."""
+    """Chat with a specific document with image support."""
     try:
         data = request.json
         document_text = data.get('document_text')
         user_question = data.get('question')
         language = data.get('language', 'en')
+        document_id = data.get('document_id')
         
         if not document_text or not user_question:
             return jsonify({'error': 'document_text and question are required'}), 400
         
-        # Create chat prompt
+        # Find relevant images for the question
+        relevant_images = []
+        if document_id:
+            relevant_images = doc_processor.find_relevant_images(document_id, user_question, language)
+        
+        # Translate question if needed for better processing
+        question_en = user_question if language == 'en' else doc_processor.translate_text(user_question, 'en')
+        question_ml = user_question if language == 'ml' else doc_processor.translate_text(user_question, 'ml')
+        
+        # Create enhanced chat prompt with image context
+        image_context = ""
+        if relevant_images:
+            image_context = "\n\nRelevant Images Found:\n"
+            for img in relevant_images:
+                image_context += f"- Image {img['id']} (Page {img['page']}): {img['text_content'][:200]}...\n"
+        
         prompt = f"""
         You are an AI assistant helping users understand documents for Kochi Metro Rail Limited (KMRL).
         
         Document Context:
         {document_text[:3000]}
+        {image_context}
         
-        User Question: {user_question}
+        User Question (English): {question_en}
+        User Question (Malayalam): {question_ml}
         
-        Please provide a helpful answer based on the document content. 
+        Please provide a helpful answer based on the document content including any relevant image information.
         Response language: {'Malayalam' if language == 'ml' else 'English'}
         
+        If relevant images were found, mention them in your response.
         If the question cannot be answered from the document, say so clearly.
         """
         
         response_text = call_deepseek_api([
-            {"role": "system", "content": "You are an AI assistant helping users understand documents for Kochi Metro Rail Limited (KMRL). Provide helpful and accurate answers based on the document content."},
+            {"role": "system", "content": "You are an AI assistant helping users understand documents for Kochi Metro Rail Limited (KMRL). Provide helpful and accurate answers based on the document content and any relevant images."},
             {"role": "user", "content": prompt}
         ], max_tokens=2000, temperature=0.3)
         
         if not response_text:
             response_text = "I apologize, but I'm unable to process your question at the moment. Please try again later."
+            if language == 'ml':
+                response_text = "ക്ഷമിക്കണം, ഇപ്പോൾ നിങ്ങളുടെ ചോദ്യം പ്രോസസ്സ് ചെയ്യാൻ എനിക്ക് കഴിയുന്നില്ല. ദയവായി പിന്നീട് വീണ്ടും ശ്രമിക്കുക."
         
-        return jsonify({
+        # Prepare response with images
+        response_data = {
             'answer': response_text,
             'language': language,
+            'relevant_images': [{'id': img['id'], 'page': img['page'], 'relevance_score': img['relevance_score']} 
+                               for img in relevant_images],
             'timestamp': datetime.now().isoformat()
-        })
+        }
+        
+        return jsonify(response_data)
         
     except Exception as e:
         logger.error(f"Document chat error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/chat/search', methods=['POST'])
+@app.route('/images/<document_id>/<image_id>', methods=['GET'])
+def get_document_image(document_id, image_id):
+    """Get a specific image from a document"""
+    try:
+        images = doc_processor.get_document_images(document_id)
+        
+        for image in images:
+            if image['id'] == image_id:
+                # Decode base64 image data
+                image_data = base64.b64decode(image['data'])
+                
+                # Return image data with proper headers
+                response = make_response(image_data)
+                response.headers.set('Content-Type', f"image/{image.get('format', 'png')}")
+                response.headers.set('Content-Length', len(image_data))
+                response.headers.set('Cache-Control', 'max-age=3600')
+                return response
+        
+        return jsonify({'error': 'Image not found'}), 404
+        
+    except Exception as e:
+        logger.error(f"Image retrieval error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/documents/<document_id>/images', methods=['GET'])
+def get_document_images_list(document_id):
+    """Get list of all images in a document"""
+    try:
+        images = doc_processor.get_document_images(document_id)
+        
+        # Return image metadata without the actual image data
+        image_list = [{
+            'id': img['id'],
+            'page': img['page'],
+            'format': img['format'],
+            'text_content': img['text_content'],
+            'languages': img['languages'],
+            'url': f"/images/{document_id}/{img['id']}"
+        } for img in images]
+        
+        return jsonify({
+            'document_id': document_id,
+            'images': image_list,
+            'total_images': len(image_list)
+        })
+        
+    except Exception as e:
+        logger.error(f"Image list error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+        return jsonify({'error': str(e)}), 500
+
+# Removed duplicate global_chat function - keeping the more comprehensive one at line 1247
+
+@app.route('/search/semantic', methods=['POST'])
 def semantic_search():
     """Perform semantic search across documents."""
     try:
@@ -883,6 +1444,37 @@ AI analysis temporarily unavailable. Please check individual documents for detai
         
     except Exception as e:
         logger.error(f"Global chat error: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/translate', methods=['POST'])
+def translate_text():
+    """Translate text between English and Malayalam"""
+    try:
+        data = request.json
+        text = data.get('text')
+        target_language = data.get('target_language', 'en')
+        
+        if not text:
+            return jsonify({'error': 'text is required'}), 400
+        
+        if target_language not in ['en', 'ml']:
+            return jsonify({'error': 'target_language must be en or ml'}), 400
+        
+        # Use the document processor's translation capability
+        translated_text = doc_processor.translate_text(text, target_language)
+        
+        if not translated_text:
+            translated_text = text  # Fallback to original text
+        
+        return jsonify({
+            'translated_text': translated_text,
+            'source_language': 'en' if target_language == 'ml' else 'ml',
+            'target_language': target_language,
+            'timestamp': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Translation error: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':

@@ -101,6 +101,15 @@ export const documentAPI = {
     });
     return response.data;
   },
+
+  // AI Service endpoints
+  translate: async (text, targetLanguage) => {
+    const response = await api.post('/ai-service/translate', {
+      text,
+      target_language: targetLanguage
+    });
+    return response.data;
+  },
 };
 
 export default api;

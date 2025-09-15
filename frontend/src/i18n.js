@@ -46,7 +46,43 @@ const resources = {
       "hr": "HR",
       "finance": "Finance",
       "engineer": "Engineer",
-      "admin": "Admin"
+      "admin": "Admin",
+      "imagesFound": "Images Found",
+      "relevantImages": "Relevant Images",
+      "extractedImages": "Extracted Images",
+      "noImagesFound": "No images found",
+      "imageFromPage": "Image from page {{page}}",
+      "ocrText": "OCR Text",
+      "languagesDetected": "Languages Detected",
+      "multilingualContent": "Multilingual Content",
+      "imageSearch": "Search Images",
+      "searchInImages": "Search in extracted images...",
+      "viewFullImage": "View Full Image",
+      "error": {
+        "documentNotFound": "Document not found",
+        "chatFailed": "Failed to send message",
+        "imageLoadFailed": "Failed to load image"
+      },
+      "common": {
+        "back": "Back",
+        "close": "Close",
+        "loading": "Loading...",
+        "error": "Error"
+      },
+      "document": {
+        "details": "Document Details",
+        "download": "Download",
+        "uploadDate": "Upload Date",
+        "fileSize": "File Size",
+        "sensitivity": "Sensitivity",
+        "aiConfidence": "AI Confidence",
+        "tags": "Tags",
+        "allowedRoles": "Allowed Roles",
+        "summary": "Summary",
+        "noSummary": "No summary available",
+        "chat": "Document Chat",
+        "askQuestion": "Ask a question about this document..."
+      }
     }
   },
   ml: {
@@ -92,7 +128,43 @@ const resources = {
       "hr": "HR",
       "finance": "ഫിനാൻസ്",
       "engineer": "എൻജിനീയർ",
-      "admin": "അഡ്മിൻ"
+      "admin": "അഡ്മിൻ",
+      "imagesFound": "ചിത്രങ്ങൾ കണ്ടെത്തി",
+      "relevantImages": "പ്രസക്തമായ ചിത്രങ്ങൾ",
+      "extractedImages": "എക്‌സ്‌ട്രാക്റ്റ് ചെയ്ത ചിത്രങ്ങൾ",
+      "noImagesFound": "ചിത്രങ്ങൾ കണ്ടെത്തിയില്ല",
+      "imageFromPage": "പേജ് {{page}} ൽ നിന്നുള്ള ചിത്രം",
+      "ocrText": "OCR ടെക്‌സ്റ്റ്",
+      "languagesDetected": "കണ്ടെത്തിയ ഭാഷകൾ",
+      "multilingualContent": "ബഹുഭാഷാ ഉള്ളടക്കം",
+      "imageSearch": "ചിത്രങ്ങൾ തിരയുക",
+      "searchInImages": "എക്‌സ്‌ട്രാക്റ്റ് ചെയ്ത ചിത്രങ്ങളിൽ തിരയുക...",
+      "viewFullImage": "പൂർണ്ണ ചിത്രം കാണുക",
+      "error": {
+        "documentNotFound": "ഡോക്യുമെന്റ് കണ്ടെത്തിയില്ല",
+        "chatFailed": "സന്ദേശം അയയ്ക്കാൻ പരാജയപ്പെട്ടു",
+        "imageLoadFailed": "ചിത്രം ലോഡ് ചെയ്യാൻ പരാജയപ്പെട്ടു"
+      },
+      "common": {
+        "back": "തിരികെ",
+        "close": "അടയ്ക്കുക",
+        "loading": "ലോഡിംഗ്...",
+        "error": "പിശക്"
+      },
+      "document": {
+        "details": "ഡോക്യുമെന്റ് വിവരങ്ങൾ",
+        "download": "ഡൗൺലോഡ്",
+        "uploadDate": "അപ്‌ലോഡ് തീയതി",
+        "fileSize": "ഫയൽ വലുപ്പം",
+        "sensitivity": "സെൻസിറ്റിവിറ്റി",
+        "aiConfidence": "AI ആത്മവിശ്വാസം",
+        "tags": "ടാഗുകൾ",
+        "allowedRoles": "അനുവദനീയമായ റോളുകൾ",
+        "summary": "സംഗ്രഹം",
+        "noSummary": "സംഗ്രഹം ലഭ്യമല്ല",
+        "chat": "ഡോക്യുമെന്റ് ചാറ്റ്",
+        "askQuestion": "ഈ ഡോക്യുമെന്റിനെക്കുറിച്ച് ഒരു ചോദ്യം ചോദിക്കുക..."
+      }
     }
   }
 };

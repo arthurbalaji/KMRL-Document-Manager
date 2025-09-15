@@ -234,7 +234,8 @@ public class DocumentService {
             Map<String, Object> request = Map.of(
                 "document_text", document.getExtractedText() != null ? document.getExtractedText() : "",
                 "question", question,
-                "language", language
+                "language", language,
+                "document_id", documentId.toString()
             );
 
             @SuppressWarnings("unchecked")

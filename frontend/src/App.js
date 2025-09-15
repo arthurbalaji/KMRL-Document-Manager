@@ -10,6 +10,7 @@ import DocumentView from './components/DocumentView';
 import Upload from './components/Upload';
 import GlobalSearch from './components/GlobalSearch';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { LanguageProvider } from './contexts/LanguageContext';
 import api from './services/api';
 
 const theme = createTheme({
@@ -136,9 +137,11 @@ function App() {
     <QueryClientProvider client={queryClient}>
       <ThemeProvider theme={theme}>
         <CssBaseline />
-        <AuthProvider>
-          <AppContent />
-        </AuthProvider>
+        <LanguageProvider>
+          <AuthProvider>
+            <AppContent />
+          </AuthProvider>
+        </LanguageProvider>
       </ThemeProvider>
     </QueryClientProvider>
   );

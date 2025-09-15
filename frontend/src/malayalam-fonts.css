@@ -1,0 +1,102 @@
+/* Import Google Fonts for Malayalam support */
+@import url('https://fonts.googleapis.com/css2?family=Noto+Sans+Malayalam:wght@100;200;300;400;500;600;700;800;900&display=swap');
+
+/* Global Malayalam font styles */
+.malayalam-text {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  direction: ltr; /* Malayalam is written left-to-right */
+}
+
+/* Ensure proper rendering for Malayalam text */
+.malayalam-text * {
+  font-feature-settings: "liga" 1, "kern" 1;
+  text-rendering: optimizeLegibility;
+}
+
+/* Specific styles for different text elements */
+.malayalam-heading {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
+.malayalam-body {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  font-weight: 400;
+  line-height: 1.6;
+}
+
+.malayalam-caption {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  font-weight: 300;
+  font-size: 0.875rem;
+}
+
+/* Button and interface element styles */
+.malayalam-button {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  font-weight: 500;
+}
+
+/* Input field styles for Malayalam */
+.malayalam-input input,
+.malayalam-input textarea {
+  font-family: 'Noto Sans Malayalam', sans-serif !important;
+}
+
+/* Fix for Material-UI components */
+.MuiTypography-root.malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif !important;
+}
+
+.MuiInputBase-input.malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif !important;
+}
+
+.MuiButton-root.malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif !important;
+}
+
+/* Chat message styles */
+.chat-message-malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  line-height: 1.5;
+}
+
+/* OCR text display */
+.ocr-text-malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.6;
+}
+
+/* Language switcher styles */
+.language-switcher .MuiToggleButton-root {
+  min-width: 60px;
+}
+
+.language-switcher .MuiToggleButton-root.malayalam {
+  font-family: 'Noto Sans Malayalam', sans-serif;
+  font-size: 0.875rem;
+}
+
+/* Responsive font sizes for Malayalam */
+@media (max-width: 600px) {
+  .malayalam-text {
+    font-size: 0.9rem;
+  }
+  
+  .malayalam-heading {
+    font-size: 1.2rem;
+  }
+}
+
+/* Print styles for Malayalam content */
+@media print {
+  .malayalam-text {
+    font-family: 'Noto Sans Malayalam', serif !important;
+    -webkit-print-color-adjust: exact;
+    print-color-adjust: exact;
+  }
+}

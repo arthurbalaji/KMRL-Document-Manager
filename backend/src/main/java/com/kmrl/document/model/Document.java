@@ -11,6 +11,7 @@ import org.hibernate.type.SqlTypes;
 import java.math.BigDecimal;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
+import java.time.ZoneOffset;
 import java.util.List;
 import java.util.Map;
 
@@ -46,7 +47,7 @@ public class Document {
     private User uploadedBy;
 
     @Column(nullable = false, updatable = false)
-    private LocalDateTime uploadDate = LocalDateTime.now();
+    private LocalDateTime uploadDate;
 
     @Column(columnDefinition = "TEXT")
     private String summaryEn;
@@ -79,11 +80,23 @@ public class Document {
     @JdbcTypeCode(SqlTypes.JSON)
     private List<Double> embeddings;
 
+    // Multilingual and image support fields
+    @JdbcTypeCode(SqlTypes.JSON)
+    private List<String> languagesDetected;
+
+    private Integer imagesCount = 0;
+
+    private Boolean hasMultilingualContent = false;
+
+    @OneToMany(mappedBy = "document", cascade = CascadeType.ALL, fetch = FetchType.LAZY)
+    @JsonIgnore
+    private List<DocumentImage> images;
+
     @Column(nullable = false, updatable = false)
-    private LocalDateTime createdAt = LocalDateTime.now();
+    private LocalDateTime createdAt;
 
     @Column(nullable = false)
-    private LocalDateTime updatedAt = LocalDateTime.now();
+    private LocalDateTime updatedAt;
 
     // Constructors
     public Document() {}
@@ -266,9 +279,49 @@ public class Document {
         this.updatedAt = updatedAt;
     }
 
+    public List<String> getLanguagesDetected() {
+        return languagesDetected;
+    }
+
+    public void setLanguagesDetected(List<String> languagesDetected) {
+        this.languagesDetected = languagesDetected;
+    }
+
+    public Integer getImagesCount() {
+        return imagesCount;
+    }
+
+    public void setImagesCount(Integer imagesCount) {
+        this.imagesCount = imagesCount;
+    }
+
+    public Boolean getHasMultilingualContent() {
+        return hasMultilingualContent;
+    }
+
+    public void setHasMultilingualContent(Boolean hasMultilingualContent) {
+        this.hasMultilingualContent = hasMultilingualContent;
+    }
+
+    public List<DocumentImage> getImages() {
+        return images;
+    }
+
+    public void setImages(List<DocumentImage> images) {
+        this.images = images;
+    }
+
+    @PrePersist
+    public void prePersist() {
+        LocalDateTime now = LocalDateTime.now(ZoneOffset.UTC);
+        this.uploadDate = now;
+        this.createdAt = now;
+        this.updatedAt = now;
+    }
+
     @PreUpdate
     public void preUpdate() {
-        this.updatedAt = LocalDateTime.now();
+        this.updatedAt = LocalDateTime.now(ZoneOffset.UTC);
     }
 
     // Helper method to check if user has access

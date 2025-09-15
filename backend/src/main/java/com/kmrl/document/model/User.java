@@ -180,6 +180,11 @@ public class User implements UserDetails {
         this.updatedAt = updatedAt;
     }
 
+    // Computed property for full name
+    public String getFullName() {
+        return String.format("%s %s", firstName, lastName).trim();
+    }
+
     @PreUpdate
     public void preUpdate() {
         this.updatedAt = LocalDateTime.now();

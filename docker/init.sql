@@ -39,6 +39,11 @@ CREATE TABLE documents (
     ai_confidence DECIMAL(3,2), -- 0.00 to 1.00
     sensitivity_level VARCHAR(50) DEFAULT 'MEDIUM' CHECK (sensitivity_level IN ('LOW', 'MEDIUM', 'HIGH', 'CONFIDENTIAL')),
     
+    -- Multilingual and image support
+    languages_detected JSONB DEFAULT '[]',
+    images_count INTEGER DEFAULT 0,
+    has_multilingual_content BOOLEAN DEFAULT false,
+    
     -- Lifecycle
     retention_days INTEGER DEFAULT 2555, -- ~7 years default
     expiry_date DATE,
@@ -49,6 +54,22 @@ CREATE TABLE documents (
     
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Document images table to store extracted images from documents
+CREATE TABLE document_images (
+    id SERIAL PRIMARY KEY,
+    document_id INTEGER REFERENCES documents(id) ON DELETE CASCADE,
+    image_id VARCHAR(200) NOT NULL, -- Format: document_id_page_img_index
+    page_number INTEGER DEFAULT 1,
+    image_data TEXT, -- Base64 encoded image
+    image_format VARCHAR(10) DEFAULT 'png', -- png, jpg, etc.
+    text_content TEXT, -- OCR extracted text from image
+    languages_detected JSONB DEFAULT '[]',
+    bbox JSONB, -- Bounding box coordinates {x0, y0, x1, y1}
+    extraction_confidence DECIMAL(3,2) DEFAULT 0.0,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(document_id, image_id)
 );
 
 -- Document access log
@@ -99,6 +120,14 @@ CREATE INDEX idx_documents_allowed_roles ON documents USING gin(allowed_roles);
 CREATE INDEX idx_documents_tags ON documents USING gin(tags);
 CREATE INDEX idx_documents_uploaded_by ON documents(uploaded_by);
 CREATE INDEX idx_documents_status ON documents(status);
+CREATE INDEX idx_documents_languages ON documents USING gin(languages_detected);
+CREATE INDEX idx_documents_text_search ON documents USING gin(to_tsvector('english', filename || ' ' || COALESCE(summary_en, '') || ' ' || COALESCE(extracted_text, '')));
+CREATE INDEX idx_documents_text_search_ml ON documents USING gin(to_tsvector('simple', filename || ' ' || COALESCE(summary_ml, '')));
+
+CREATE INDEX idx_document_images_document_id ON document_images(document_id);
+CREATE INDEX idx_document_images_page ON document_images(page_number);
+CREATE INDEX idx_document_images_text_search ON document_images USING gin(to_tsvector('english', COALESCE(text_content, '')));
+
 CREATE INDEX idx_document_access_log_document_user ON document_access_log(document_id, user_id);
 CREATE INDEX idx_chat_sessions_user_document ON chat_sessions(user_id, document_id);
 

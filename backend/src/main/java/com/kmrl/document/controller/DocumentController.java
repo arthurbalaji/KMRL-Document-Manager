@@ -1,11 +1,14 @@
 package com.kmrl.document.controller;
 
 import com.kmrl.document.model.Document;
+import com.kmrl.document.model.DocumentImage;
 import com.kmrl.document.model.DocumentStatus;
 import com.kmrl.document.model.Role;
 import com.kmrl.document.model.User;
 import com.kmrl.document.service.DocumentService;
+import com.kmrl.document.service.DocumentImageService;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.beans.factory.annotation.Value;
 import org.springframework.core.io.Resource;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.PageRequest;
@@ -17,8 +20,11 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.security.core.Authentication;
 import org.springframework.web.bind.annotation.*;
 import org.springframework.web.multipart.MultipartFile;
+import org.springframework.web.reactive.function.client.WebClient;
 
 import java.io.IOException;
+import java.util.Base64;
+import java.util.List;
 import java.util.Map;
 import java.util.Optional;
 
@@ -28,6 +34,15 @@ public class DocumentController {
 
     @Autowired
     private DocumentService documentService;
+
+    @Autowired
+    private DocumentImageService documentImageService;
+    
+    @Autowired
+    private WebClient.Builder webClientBuilder;
+    
+    @Value("${ai.service.url:http://ai-service:5000}")
+    private String aiServiceUrl;
 
     @PostMapping("/upload")
     public ResponseEntity<?> uploadDocument(
@@ -94,6 +109,50 @@ public class DocumentController {
                 .contentType(MediaType.parseMediaType(document.getMimeType()))
                 .header(HttpHeaders.CONTENT_DISPOSITION, 
                        "attachment; filename=\"" + document.getOriginalFilename() + "\"")
+                .body(resource);
+                
+        } catch (IOException e) {
+            return ResponseEntity.notFound().build();
+        }
+    }
+
+    @GetMapping("/{id}/view")
+    public ResponseEntity<Resource> viewDocument(@PathVariable Long id, 
+                                                @RequestParam(required = false) String token,
+                                                Authentication authentication) {
+        try {
+            User user = null;
+            
+            // If token is provided as query parameter, validate it
+            if (token != null && !token.isEmpty()) {
+                // You'll need to inject JwtTokenProvider here to validate token
+                // For now, let's use the existing authentication
+                user = (User) authentication.getPrincipal();
+            } else {
+                user = (User) authentication.getPrincipal();
+            }
+            
+            if (user == null) {
+                return ResponseEntity.status(HttpStatus.UNAUTHORIZED).build();
+            }
+            
+            Optional<Document> documentOpt = documentService.getDocumentById(id, user);
+            
+            if (documentOpt.isEmpty()) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            Document document = documentOpt.get();
+            Resource resource = documentService.getDocumentFile(document);
+            
+            return ResponseEntity.ok()
+                .contentType(MediaType.parseMediaType(document.getMimeType()))
+                .header(HttpHeaders.CONTENT_DISPOSITION, 
+                       "inline; filename=\"" + document.getOriginalFilename() + "\"")
+                .header(HttpHeaders.CACHE_CONTROL, "no-cache, no-store, must-revalidate")
+                .header(HttpHeaders.PRAGMA, "no-cache")
+                .header(HttpHeaders.EXPIRES, "0")
+                .header("X-Frame-Options", "SAMEORIGIN") // Allow iframe from same origin
                 .body(resource);
                 
         } catch (IOException e) {
@@ -255,6 +314,132 @@ public class DocumentController {
 
         public void setStatus(DocumentStatus status) {
             this.status = status;
+        }
+    }
+
+    // Image serving endpoints
+    @GetMapping("/{documentId}/images")
+    public ResponseEntity<List<DocumentImage>> getDocumentImages(@PathVariable Long documentId, Authentication authentication) {
+        try {
+            User user = (User) authentication.getPrincipal();
+            Optional<Document> document = documentService.getDocumentById(documentId, user);
+            
+            if (document.isEmpty() || !document.get().hasAccess(user)) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            List<DocumentImage> images = documentImageService.getImagesByDocumentId(documentId);
+            return ResponseEntity.ok(images);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/{documentId}/images/{imageId}")
+    public ResponseEntity<byte[]> getDocumentImage(@PathVariable Long documentId, @PathVariable Long imageId, Authentication authentication) {
+        try {
+            User user = (User) authentication.getPrincipal();
+            Optional<Document> document = documentService.getDocumentById(documentId, user);
+            
+            if (document.isEmpty() || !document.get().hasAccess(user)) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            Optional<DocumentImage> image = documentImageService.getImageById(imageId);
+            if (image.isEmpty() || !image.get().getDocument().getId().equals(documentId)) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            // Decode base64 image data
+            byte[] imageBytes = Base64.getDecoder().decode(image.get().getImageData());
+            
+            return ResponseEntity.ok()
+                    .contentType(MediaType.IMAGE_PNG) // Default to PNG, could be made dynamic
+                    .body(imageBytes);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/{documentId}/images/search")
+    public ResponseEntity<List<DocumentImage>> searchDocumentImages(@PathVariable Long documentId, @RequestParam String query, Authentication authentication) {
+        try {
+            User user = (User) authentication.getPrincipal();
+            Optional<Document> document = documentService.getDocumentById(documentId, user);
+            
+            if (document.isEmpty() || !document.get().hasAccess(user)) {
+                return ResponseEntity.notFound().build();
+            }
+            
+            List<DocumentImage> images = documentImageService.searchImagesByText(documentId, query);
+            return ResponseEntity.ok(images);
+        } catch (Exception e) {
+            return ResponseEntity.internalServerError().build();
+        }
+    }
+
+    @GetMapping("/ai-service/images/{documentId}/{imageId}")
+    public ResponseEntity<?> getDocumentImage(
+            @PathVariable String documentId,
+            @PathVariable String imageId,
+            Authentication authentication) {
+        try {
+            WebClient webClient = webClientBuilder.build();
+            
+            // Forward request to AI service with better error handling
+            byte[] imageData = webClient.get()
+                .uri(aiServiceUrl + "/images/" + documentId + "/" + imageId)
+                .retrieve()
+                .onStatus(status -> status.is4xxClientError(), clientResponse -> {
+                    System.out.println("Client error from AI service: " + clientResponse.statusCode());
+                    return clientResponse.createException();
+                })
+                .onStatus(status -> status.is5xxServerError(), clientResponse -> {
+                    System.out.println("Server error from AI service: " + clientResponse.statusCode());
+                    return clientResponse.createException();
+                })
+                .bodyToMono(byte[].class)
+                .doOnError(error -> System.out.println("WebClient error: " + error.getMessage()))
+                .block();
+            
+            if (imageData != null && imageData.length > 0) {
+                HttpHeaders headers = new HttpHeaders();
+                headers.setContentType(MediaType.IMAGE_PNG);
+                headers.setContentLength(imageData.length);
+                headers.setCacheControl("max-age=3600");
+                
+                return new ResponseEntity<>(imageData, headers, HttpStatus.OK);
+            } else {
+                System.out.println("No image data received for: " + documentId + "/" + imageId);
+                return ResponseEntity.notFound().build();
+            }
+        } catch (Exception e) {
+            System.out.println("Error proxying image request: " + e.getMessage());
+            e.printStackTrace();
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", "Failed to retrieve image: " + e.getMessage()));
+        }
+    }
+
+    @PostMapping("/ai-service/translate")
+    public ResponseEntity<?> translateText(
+            @RequestBody Map<String, Object> request,
+            Authentication authentication) {
+        try {
+            WebClient webClient = webClientBuilder.build();
+            
+            @SuppressWarnings("unchecked")
+            Map<String, Object> response = (Map<String, Object>) webClient.post()
+                .uri(aiServiceUrl + "/translate")
+                .bodyValue(request)
+                .retrieve()
+                .bodyToMono(Map.class)
+                .block();
+            
+            return ResponseEntity.ok(response);
+        } catch (Exception e) {
+            return ResponseEntity.badRequest()
+                .body(Map.of("error", e.getMessage()));
         }
     }
 }
