@@ -354,13 +354,16 @@ const DocumentView = ({ document, onBack, showChat = true }) => {
                       </p>
                       <div className="flex items-center space-x-2">
                         <p className="text-sm text-gray-900">
-                          {document.aiConfidence ? `${(document.aiConfidence * 100).toFixed(1)}%` : 'N/A'}
+                          {(() => {
+                            const val = Number(document.aiConfidence);
+                            return Number.isFinite(val) ? `${(Math.min(Math.max(val, 0), 1) * 100).toFixed(1)}%` : 'N/A';
+                          })()}
                         </p>
-                        {document.aiConfidence && (
+                        {(() => Number.isFinite(Number(document.aiConfidence)))() && (
                           <div className="w-12 h-2 bg-gray-200 rounded-full overflow-hidden">
                             <div 
                               className="h-full bg-indigo-600 rounded-full"
-                              style={{width: `${document.aiConfidence * 100}%`}}
+                              style={{width: `${Math.min(Math.max(Number(document.aiConfidence) * 100, 0), 100)}%`}}
                             ></div>
                           </div>
                         )}

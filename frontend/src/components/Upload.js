@@ -17,32 +17,96 @@ import { useDropzone } from 'react-dropzone';
 import { useTranslation } from 'react-i18next';
 import { useNavigate } from 'react-router-dom';
 import { documentAPI } from '../services/api';
+import api from '../services/api';
 
 export default function Upload() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const [uploading, setUploading] = useState(false);
+  const [processingAI, setProcessingAI] = useState(false);
+  const [uploadedDocumentId, setUploadedDocumentId] = useState(null);
+  const [pollingAttempts, setPollingAttempts] = useState(0);
   const [message, setMessage] = useState('');
   const [error, setError] = useState('');
+
+  // Function to check if document has AI processing completed
+  const checkAIProcessingStatus = async (documentId) => {
+    try {
+      const response = await api.get(`/documents/${documentId}`);
+      const document = response.data;
+      
+      // Check if AI processing is complete (has aiConfidence and summary)
+      return document.aiConfidence !== null && document.aiConfidence !== undefined && 
+             (document.summaryEn || document.summaryMl) && 
+             (document.summaryEn?.trim() !== '' || document.summaryMl?.trim() !== '');
+    } catch (error) {
+      console.error('Error checking AI processing status:', error);
+      return false;
+    }
+  };
+
+  // Function to poll for AI processing completion
+  const pollForAICompletion = async (documentId, maxAttempts = 30) => {
+    for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+      setPollingAttempts(attempt);
+      
+      const isComplete = await checkAIProcessingStatus(documentId);
+      
+      if (isComplete) {
+        setProcessingAI(false);
+        setMessage(`Document processed successfully with AI analysis!`);
+        setTimeout(() => {
+          navigate('/documents', { state: { refresh: true }, replace: true });
+        }, 2000);
+        return;
+      }
+      
+      // Wait 2 seconds before next attempt
+      if (attempt < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 2000));
+      }
+    }
+    
+    // If we reach here, AI processing didn't complete in time
+    setProcessingAI(false);
+    setMessage(`Document uploaded successfully. AI analysis may take a bit longer.`);
+    setTimeout(() => {
+      navigate('/documents', { state: { refresh: true }, replace: true });
+    }, 3000);
+  };
 
   const onDrop = useCallback(async (acceptedFiles) => {
     if (acceptedFiles.length === 0) return;
 
     const file = acceptedFiles[0];
     setUploading(true);
+    setProcessingAI(false);
+    setUploadedDocumentId(null);
+    setPollingAttempts(0);
     setError('');
     setMessage('');
 
     try {
       const response = await documentAPI.uploadDocument(file);
       setMessage(`Document uploaded successfully: ${response.filename}`);
-      setTimeout(() => {
-        navigate('/documents', { state: { refresh: true }, replace: true });
-      }, 2000);
+      setUploading(false);
+      
+      // Start AI processing polling
+      if (response.id) {
+        setProcessingAI(true);
+        setUploadedDocumentId(response.id);
+        
+        // Start polling for AI completion
+        pollForAICompletion(response.id);
+      } else {
+        setTimeout(() => {
+          navigate('/documents', { state: { refresh: true }, replace: true });
+        }, 2000);
+      }
     } catch (error) {
       setError(error.response?.data?.error || 'Upload failed');
-    } finally {
       setUploading(false);
+      setProcessingAI(false);
     }
   }, [navigate]);
 
@@ -51,7 +115,15 @@ export default function Upload() {
     accept: {
       'application/pdf': ['.pdf'],
       'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
-      'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.bmp'],
+      'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+      'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet': ['.xlsx'],
+      'application/vnd.ms-excel': ['.xls'],
+      'application/vnd.ms-powerpoint': ['.ppt'],
+      'text/plain': ['.txt'],
+      'text/csv': ['.csv'],
+      'application/rtf': ['.rtf'],
+      'application/msword': ['.doc'],
+      'image/*': ['.jpeg', '.jpg', '.png', '.gif', '.bmp', '.webp', '.tiff'],
     },
     multiple: false,
     maxSize: 50 * 1024 * 1024, // 50MB
@@ -138,7 +210,7 @@ export default function Upload() {
                   : 'border-gray-300 hover:border-purple-400 hover:bg-gray-50'
               }`}
             >
-              <input {...getInputProps()} />
+              <input {...getInputProps()} disabled={uploading || processingAI} />
               
               {uploading ? (
                 <div className="space-y-4">
@@ -147,23 +219,43 @@ export default function Upload() {
                   </div>
                   <div>
                     <h3 className="text-xl font-semibold text-gray-900 mb-2">
-                      {t('processing')}
+                      Uploading Document...
                     </h3>
                     <p className="text-gray-600 mb-4">
-                      Processing your document...
+                      Please wait while we upload your document
+                    </p>
+                    <div className="max-w-md mx-auto space-y-2">
+                      <div className="flex items-center justify-center space-x-2 text-sm text-gray-600 bg-blue-100 rounded-lg px-4 py-2">
+                        <div className="h-2 w-2 bg-blue-600 rounded-full animate-pulse"></div>
+                        <span>Uploading file...</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : processingAI ? (
+                <div className="space-y-4">
+                  <div className="mx-auto h-16 w-16 bg-green-100 rounded-lg flex items-center justify-center">
+                    <CircularProgress size={40} className="text-green-600" />
+                  </div>
+                  <div>
+                    <h3 className="text-xl font-semibold text-gray-900 mb-2">
+                      AI Processing...
+                    </h3>
+                    <p className="text-gray-600 mb-4">
+                      Analyzing document with AI ({pollingAttempts}/30)
                     </p>
                     <div className="max-w-md mx-auto space-y-2">
                       <div className="flex items-center justify-center space-x-2 text-sm text-gray-600 bg-gray-100 rounded-lg px-4 py-2">
-                        <div className="h-2 w-2 bg-purple-600 rounded-full"></div>
+                        <div className="h-2 w-2 bg-purple-600 rounded-full animate-pulse"></div>
                         <span>Extracting text and images</span>
                       </div>
                       <div className="flex items-center justify-center space-x-2 text-sm text-gray-600 bg-gray-100 rounded-lg px-4 py-2">
-                        <div className="h-2 w-2 bg-green-600 rounded-full"></div>
-                        <span>Generating summary</span>
+                        <div className="h-2 w-2 bg-green-600 rounded-full animate-pulse"></div>
+                        <span>Generating summary and analysis</span>
                       </div>
                       <div className="flex items-center justify-center space-x-2 text-sm text-gray-600 bg-gray-100 rounded-lg px-4 py-2">
-                        <div className="h-2 w-2 bg-blue-600 rounded-full"></div>
-                        <span>Applying classifications</span>
+                        <div className="h-2 w-2 bg-blue-600 rounded-full animate-pulse"></div>
+                        <span>Applying AI classifications</span>
                       </div>
                     </div>
                   </div>
@@ -194,7 +286,7 @@ export default function Upload() {
                     </p>
                     <div className="inline-flex items-center space-x-2 bg-gray-100 rounded-lg px-4 py-2 mb-4">
                       <span className="text-sm text-gray-700">
-                        Supported: PDF, DOCX, Images • Max: 50MB
+                        Supported: PDF, DOCX, PPTX, XLSX, TXT, CSV, Images • Max: 50MB
                       </span>
                     </div>
                   </div>

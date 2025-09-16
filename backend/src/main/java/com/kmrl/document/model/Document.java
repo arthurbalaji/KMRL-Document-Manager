@@ -1,6 +1,7 @@
 package com.kmrl.document.model;
 
 import com.fasterxml.jackson.annotation.JsonIgnore;
+import com.fasterxml.jackson.annotation.JsonProperty;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotBlank;
 import jakarta.validation.constraints.NotNull;
@@ -64,7 +65,7 @@ public class Document {
     @JdbcTypeCode(SqlTypes.JSON)
     private List<Role> allowedRoles;
 
-    @Column(precision = 3, scale = 2)
+    @Column(precision = 5, scale = 3)
     private BigDecimal aiConfidence;
 
     @Enumerated(EnumType.STRING)
@@ -215,6 +216,7 @@ public class Document {
         this.allowedRoles = allowedRoles;
     }
 
+    @JsonProperty("aiConfidence")
     public BigDecimal getAiConfidence() {
         return aiConfidence;
     }

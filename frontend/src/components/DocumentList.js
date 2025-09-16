@@ -26,13 +26,56 @@ import {
   Description as DescriptionIcon,
   Schedule as ScheduleIcon,
   Close as CloseIcon,
-  Fullscreen as FullscreenIcon
+  Fullscreen as FullscreenIcon,
+  PictureAsPdf as PdfIcon,
+  TableChart as ExcelIcon,
+  Slideshow as PowerPointIcon,
+  TextFields as TextIcon,
+  Image as ImageIcon,
+  Article as WordIcon,
+  AutoAwesome as AutoAwesomeIcon
 } from '@mui/icons-material';
 import { useTranslation } from 'react-i18next';
 import { formatDistanceToNow, format } from 'date-fns';
 import { useLocation } from 'react-router-dom';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../services/api';
+
+// Function to get appropriate file icon based on content type or filename
+const getFileIcon = (contentType, filename) => {
+  const extension = filename?.toLowerCase().split('.').pop();
+  
+  if (contentType?.includes('pdf')) {
+    return { icon: PdfIcon, color: 'text-red-600', bgColor: 'bg-red-100' };
+  }
+  
+  if (contentType?.includes('wordprocessingml') || extension === 'docx' || extension === 'doc') {
+    return { icon: WordIcon, color: 'text-blue-600', bgColor: 'bg-blue-100' };
+  }
+  
+  if (contentType?.includes('presentationml') || extension === 'pptx' || extension === 'ppt') {
+    return { icon: PowerPointIcon, color: 'text-orange-600', bgColor: 'bg-orange-100' };
+  }
+  
+  if (contentType?.includes('spreadsheetml') || extension === 'xlsx' || extension === 'xls') {
+    return { icon: ExcelIcon, color: 'text-green-600', bgColor: 'bg-green-100' };
+  }
+  
+  if (contentType?.includes('text/plain') || extension === 'txt') {
+    return { icon: TextIcon, color: 'text-gray-600', bgColor: 'bg-gray-100' };
+  }
+  
+  if (contentType?.includes('text/csv') || extension === 'csv') {
+    return { icon: ExcelIcon, color: 'text-green-600', bgColor: 'bg-green-100' };
+  }
+  
+  if (contentType?.includes('image/') || ['jpg', 'jpeg', 'png', 'gif', 'bmp', 'webp', 'tiff'].includes(extension)) {
+    return { icon: ImageIcon, color: 'text-purple-600', bgColor: 'bg-purple-100' };
+  }
+  
+  // Default icon for unsupported types
+  return { icon: DescriptionIcon, color: 'text-blue-600', bgColor: 'bg-blue-100' };
+};
 
 // Document Viewer Frame Component
 const DocumentViewerFrame = ({ documentId, filename }) => {
@@ -447,8 +490,10 @@ const DocumentList = ({ onDocumentSelect }) => {
                 <div className="p-6 border-b border-gray-200">
                   <div className="flex items-start justify-between mb-4">
                     <div className="flex items-center space-x-3 flex-1 min-w-0">
-                      <div className="h-12 w-12 bg-blue-100 rounded-lg flex items-center justify-center">
-                        <DescriptionIcon className="h-6 w-6 text-blue-600" />
+                      <div className={`h-12 w-12 ${getFileIcon(doc.contentType, doc.originalFilename).bgColor} rounded-lg flex items-center justify-center`}>
+                        {React.createElement(getFileIcon(doc.contentType, doc.originalFilename).icon, {
+                          className: `h-6 w-6 ${getFileIcon(doc.contentType, doc.originalFilename).color}`
+                        })}
                       </div>
                       <div className="flex-1 min-w-0">
                         <h3 className="text-lg font-bold text-gray-900 truncate">
@@ -468,18 +513,26 @@ const DocumentList = ({ onDocumentSelect }) => {
                   
                   {/* AI Summary */}
                   <div className="border-l-4 border-blue-500 pl-4">
-                    <p className="text-gray-600 text-sm line-clamp-3">
-                      {(() => {
-                        const summary = i18n.language === 'ml' 
-                          ? (doc.summaryMl || doc.summaryEn) 
-                          : (doc.summaryEn || doc.summaryMl);
-                        const fallbackText = i18n.language === 'ml' 
-                          ? 'AI-പവർഡ് ഡോക്യുമെന്റ് വിശകലനം തീർപ്പാക്കാത്തത്...'
-                          : 'AI-powered document analysis pending...';
-                        const displayText = summary?.substring(0, 150) || fallbackText;
-                        return displayText + (summary?.length > 150 ? '...' : '');
-                      })()}
-                    </p>
+                    {doc.aiConfidence !== null && doc.aiConfidence !== undefined && (doc.summaryEn || doc.summaryMl) ? (
+                      <p className="text-gray-600 text-sm line-clamp-3">
+                        {(() => {
+                          const summary = i18n.language === 'ml' 
+                            ? (doc.summaryMl || doc.summaryEn) 
+                            : (doc.summaryEn || doc.summaryMl);
+                          const displayText = summary?.substring(0, 150) || '';
+                          return displayText + (summary?.length > 150 ? '...' : '');
+                        })()}
+                      </p>
+                    ) : (
+                      <div className="flex items-center space-x-2 py-2">
+                        <CircularProgress size={16} className="text-blue-500" />
+                        <p className="text-blue-600 text-sm font-medium">
+                          {i18n.language === 'ml' 
+                            ? 'AI വിശകലനം പ്രോസസ്സിംഗിൽ...'
+                            : 'AI analysis processing...'}
+                        </p>
+                      </div>
+                    )}
                   </div>
                   
                   {/* Status & Metadata */}
@@ -503,6 +556,25 @@ const DocumentList = ({ onDocumentSelect }) => {
                       }`}>
                         {doc.sensitivityLevel}
                       </span>
+                      
+                      {/* AI Confidence Indicator */}
+                      {(() => {
+                        const val = Number(doc.aiConfidence);
+                        return Number.isFinite(val);
+                      })() ? (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-purple-100 text-purple-700">
+                          <AutoAwesomeIcon className="h-3 w-3 mr-1" />
+                          {(() => {
+                            const pct = Math.round(Math.min(Math.max(Number(doc.aiConfidence) * 100, 0), 100));
+                            return `AI: ${pct}%`;
+                          })()}
+                        </span>
+                      ) : (
+                        <span className="inline-flex items-center px-2 py-0.5 rounded text-xs font-medium bg-gray-100 text-gray-600">
+                          <CircularProgress size={10} className="mr-1" />
+                          Processing...
+                        </span>
+                      )}
                     </div>
                     
                     <div className="flex items-center space-x-1">

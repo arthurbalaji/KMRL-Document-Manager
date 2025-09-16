@@ -4,11 +4,90 @@ import json
 import traceback
 import hashlib
 from datetime import datetime
+def clamp01(x: float) -> float:
+    try:
+        # Ensure confidence is never zero - minimum of 0.1 (10%)
+        return max(0.1, min(1.0, float(x)))
+    except Exception:
+        return 0.75
+
+def normalize_analysis(analysis: dict) -> dict:
+    """Ensure analysis has recommended_roles with a non-null confidence in [0.1,1] and reasonable defaults."""
+    logger.info(f"normalize_analysis called with: {type(analysis)}")
+    try:
+        if not isinstance(analysis, dict):
+            logger.warning("Analysis is not a dict, using defaults")
+            return {
+                'summary_en': '',
+                'summary_ml': '',
+                'tags': [],
+                'primary_language': 'en',
+                'sensitivity_level': 'MEDIUM',
+                'document_type': 'other',
+                'recommended_roles': {
+                    'roles': ['LEADERSHIP'],
+                    'confidence': 0.75,
+                    'reasoning': 'Defaulted due to invalid analysis structure'
+                },
+                'retention_recommendation': {'days': 1825, 'reason': 'Default policy'},
+                'analysis_metadata': {}
+            }
+
+        rec = analysis.get('recommended_roles') or {}
+        roles = rec.get('roles') or ['LEADERSHIP']
+        conf = rec.get('confidence', 0.75)
+        logger.info(f"Original confidence from AI: {conf} (type: {type(conf)})")
+        
+        try:
+            conf = clamp01(conf)
+            logger.info(f"After clamp01: {conf}")
+        except Exception as e:
+            logger.warning(f"Error in clamp01: {e}")
+            conf = 0.75
+
+        # If model returned 0 exactly, lift slightly to avoid zero downstream visuals
+        if conf == 0.0:
+            logger.info("Confidence was 0.0, setting to 0.15")
+            conf = 0.15
+
+        reasoning = rec.get('reasoning') or 'Combined AI and heuristic analysis.'
+        analysis['recommended_roles'] = {
+            'roles': roles,
+            'confidence': conf,
+            'reasoning': reasoning
+        }
+
+        # Default sensitivity/document_type if missing
+        if not analysis.get('sensitivity_level'):
+            analysis['sensitivity_level'] = 'MEDIUM'
+        if not analysis.get('document_type'):
+            analysis['document_type'] = 'other'
+
+        return analysis
+    except Exception as e:
+        logger.warning(f"normalize_analysis failed: {e}")
+        return {
+            'summary_en': analysis.get('summary_en', '') if isinstance(analysis, dict) else '',
+            'summary_ml': analysis.get('summary_ml', '') if isinstance(analysis, dict) else '',
+            'tags': analysis.get('tags', []) if isinstance(analysis, dict) else [],
+            'primary_language': analysis.get('primary_language', 'en') if isinstance(analysis, dict) else 'en',
+            'sensitivity_level': analysis.get('sensitivity_level', 'MEDIUM') if isinstance(analysis, dict) else 'MEDIUM',
+            'document_type': analysis.get('document_type', 'other') if isinstance(analysis, dict) else 'other',
+            'recommended_roles': {
+                'roles': ['LEADERSHIP'],
+                'confidence': 0.75,
+                'reasoning': 'Defaulted due to exception in normalization'
+            },
+            'retention_recommendation': {'days': 1825, 'reason': 'Default policy'},
+            'analysis_metadata': {}
+        }
 from typing import Dict, List, Tuple, Optional
 import base64
 import io
 import tempfile
 import uuid
+import csv
+import chardet
 
 import requests
 from flask import Flask, request, jsonify, send_file, make_response
@@ -21,6 +100,10 @@ from PIL import Image
 import PyPDF2
 from docx import Document
 import numpy as np
+import openpyxl
+import xlrd
+import pandas as pd
+from pptx import Presentation
 
 # Fix for PIL.Image.ANTIALIAS deprecation in newer versions
 try:
@@ -1626,19 +1709,19 @@ class MultilingualDocumentProcessor:
 # Initialize the multilingual processor
 doc_processor = MultilingualDocumentProcessor()
 
-# Load existing images from database into cache on startup
-try:
-    doc_processor.load_all_images_from_database()
-    logger.info("Successfully loaded existing images from database into cache")
-except Exception as e:
-    logger.error(f"Failed to load images from database on startup: {str(e)}")
-
 # Database connection
 def get_db_connection():
     return psycopg2.connect(
         os.getenv('DATABASE_URL'),
         cursor_factory=RealDictCursor
     )
+
+# Load existing images from database into cache on startup
+try:
+    doc_processor.load_all_images_from_database()
+    logger.info("Successfully loaded existing images from database into cache")
+except Exception as e:
+    logger.error(f"Failed to load images from database on startup: {str(e)}")
 
 class DocumentProcessor:
     def __init__(self):
@@ -1672,6 +1755,22 @@ class DocumentProcessor:
                 return self._extract_from_pdf(file_path)
             elif mime_type == 'application/vnd.openxmlformats-officedocument.wordprocessingml.document':
                 return self._extract_from_docx(file_path)
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.presentationml.presentation':
+                return self._extract_from_pptx(file_path)
+            elif mime_type == 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet':
+                return self._extract_from_xlsx(file_path)
+            elif mime_type == 'application/vnd.ms-excel':
+                return self._extract_from_xls(file_path)
+            elif mime_type == 'application/vnd.ms-powerpoint':
+                return self._extract_from_ppt(file_path)
+            elif mime_type == 'application/msword':
+                return self._extract_from_doc(file_path)
+            elif mime_type == 'text/plain':
+                return self._extract_from_txt(file_path)
+            elif mime_type == 'text/csv':
+                return self._extract_from_csv(file_path)
+            elif mime_type == 'application/rtf':
+                return self._extract_from_rtf(file_path)
             elif mime_type.startswith('image/'):
                 return self._extract_from_image(file_path)
             else:
@@ -1712,6 +1811,155 @@ class DocumentProcessor:
             return text.strip()
         except Exception as e:
             logger.error(f"OCR extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_txt(self, file_path: str) -> str:
+        """Extract text from plain text file."""
+        try:
+            # Detect encoding first
+            with open(file_path, 'rb') as file:
+                raw_data = file.read()
+                encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
+            
+            # Read with detected encoding
+            with open(file_path, 'r', encoding=encoding) as file:
+                return file.read().strip()
+        except Exception as e:
+            logger.error(f"TXT extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_csv(self, file_path: str) -> str:
+        """Extract text from CSV file."""
+        try:
+            # Detect encoding first
+            with open(file_path, 'rb') as file:
+                raw_data = file.read()
+                encoding = chardet.detect(raw_data)['encoding'] or 'utf-8'
+            
+            # Read CSV and convert to text
+            df = pd.read_csv(file_path, encoding=encoding)
+            # Convert dataframe to readable text format
+            text_lines = []
+            text_lines.append("CSV Data:")
+            text_lines.append("Columns: " + ", ".join(df.columns.tolist()))
+            text_lines.append("")
+            
+            for index, row in df.iterrows():
+                row_text = " | ".join([f"{col}: {str(val)}" for col, val in row.items()])
+                text_lines.append(row_text)
+                
+            return "\n".join(text_lines)
+        except Exception as e:
+            logger.error(f"CSV extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_xlsx(self, file_path: str) -> str:
+        """Extract text from Excel XLSX file."""
+        try:
+            workbook = openpyxl.load_workbook(file_path, data_only=True)
+            text_lines = []
+            
+            for sheet_name in workbook.sheetnames:
+                sheet = workbook[sheet_name]
+                text_lines.append(f"Sheet: {sheet_name}")
+                
+                for row in sheet.iter_rows(values_only=True):
+                    row_text = " | ".join([str(cell) if cell is not None else "" for cell in row])
+                    if row_text.strip():
+                        text_lines.append(row_text)
+                text_lines.append("")
+                
+            return "\n".join(text_lines)
+        except Exception as e:
+            logger.error(f"XLSX extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_xls(self, file_path: str) -> str:
+        """Extract text from Excel XLS file."""
+        try:
+            workbook = xlrd.open_workbook(file_path)
+            text_lines = []
+            
+            for sheet_idx in range(workbook.nsheets):
+                sheet = workbook.sheet_by_index(sheet_idx)
+                text_lines.append(f"Sheet: {sheet.name}")
+                
+                for row_idx in range(sheet.nrows):
+                    row_values = []
+                    for col_idx in range(sheet.ncols):
+                        cell_value = sheet.cell_value(row_idx, col_idx)
+                        row_values.append(str(cell_value) if cell_value else "")
+                    
+                    row_text = " | ".join(row_values)
+                    if row_text.strip():
+                        text_lines.append(row_text)
+                text_lines.append("")
+                
+            return "\n".join(text_lines)
+        except Exception as e:
+            logger.error(f"XLS extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_pptx(self, file_path: str) -> str:
+        """Extract text from PowerPoint PPTX file."""
+        try:
+            presentation = Presentation(file_path)
+            text_lines = []
+            
+            for slide_num, slide in enumerate(presentation.slides, 1):
+                text_lines.append(f"Slide {slide_num}:")
+                
+                for shape in slide.shapes:
+                    if hasattr(shape, "text") and shape.text:
+                        text_lines.append(shape.text)
+                
+                text_lines.append("")
+                
+            return "\n".join(text_lines)
+        except Exception as e:
+            logger.error(f"PPTX extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_ppt(self, file_path: str) -> str:
+        """Extract text from PowerPoint PPT file."""
+        try:
+            # For older PPT files, we'll try to convert using python-pptx
+            # This might not work for all PPT files, but it's a fallback
+            logger.warning(f"PPT format not fully supported, attempting basic extraction: {file_path}")
+            return "PPT file detected. Please convert to PPTX format for better text extraction."
+        except Exception as e:
+            logger.error(f"PPT extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_doc(self, file_path: str) -> str:
+        """Extract text from Word DOC file."""
+        try:
+            # For older DOC files, we'll provide a message
+            logger.warning(f"DOC format not fully supported, basic extraction only: {file_path}")
+            return "DOC file detected. Please convert to DOCX format for better text extraction."
+        except Exception as e:
+            logger.error(f"DOC extraction error: {str(e)}")
+            return ""
+
+    def _extract_from_rtf(self, file_path: str) -> str:
+        """Extract text from RTF file."""
+        try:
+            # Basic RTF extraction - remove RTF formatting
+            with open(file_path, 'r', encoding='utf-8', errors='ignore') as file:
+                content = file.read()
+                
+            # Simple RTF tag removal (basic approach)
+            import re
+            # Remove RTF control words
+            content = re.sub(r'\\[a-z]+\d*\s*', '', content)
+            # Remove curly braces
+            content = re.sub(r'[{}]', '', content)
+            # Clean up extra whitespace
+            content = re.sub(r'\s+', ' ', content)
+            
+            return content.strip()
+        except Exception as e:
+            logger.error(f"RTF extraction error: {str(e)}")
             return ""
     
     def detect_language(self, text: str) -> str:
@@ -1853,7 +2101,7 @@ class DocumentProcessor:
             - Document type indicators: {', '.join(set(combined_insights['document_types']))}
             - Sensitivity indicators: {', '.join(set(combined_insights['sensitivity_indicators']))}
             
-            Create final analysis in JSON format:
+            Create final analysis STRICTLY in JSON format (no prose). IMPORTANT: Always include a numeric confidence between 0 and 1 under recommended_roles.confidence. If unsure, estimate reasonably based on evidence.
             {{
                 "summary_en": "Comprehensive summary covering all analyzed sections",
                 "summary_ml": "Malayalam summary (if applicable)",
@@ -1901,6 +2149,22 @@ class DocumentProcessor:
                         final_response = final_response[:-3]
                     
                     analysis = json.loads(final_response)
+                    # Normalize confidence to ensure it's always present and valid
+                    try:
+                        rr = analysis.get('recommended_roles') or {}
+                        conf = rr.get('confidence')
+                        if conf is None:
+                            # Derive a conservative default based on coverage
+                            coverage = max(min(len(chunk_analyses) / max(len(chunks), 1), 1.0), 0.0)
+                            conf = 0.6 + 0.3 * coverage
+                        conf = float(conf)
+                        if not (conf == conf):  # NaN check
+                            conf = 0.75
+                        conf = max(0.0, min(conf, 1.0))
+                        rr['confidence'] = conf
+                        analysis['recommended_roles'] = rr
+                    except Exception as _:
+                        analysis.setdefault('recommended_roles', {}).setdefault('confidence', 0.75)
                     logger.info("Successfully parsed comprehensive AI response")
                     
                     # Apply heuristic role assignment as backup
@@ -2286,21 +2550,161 @@ def process_document():
                 doc_processor.save_images_to_database(document_id, extracted_images)
             languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
             
+        elif file_extension in ['.ppt', '.pptx']:
+            # Process PowerPoint document
+            if file_extension == '.pptx':
+                presentation = Presentation(file_path)
+                text_lines = []
+                extracted_images = []
+                
+                for slide_num, slide in enumerate(presentation.slides, 1):
+                    text_lines.append(f"Slide {slide_num}:")
+                    
+                    for shape in slide.shapes:
+                        if hasattr(shape, "text") and shape.text:
+                            text_lines.append(shape.text)
+                        
+                        # Extract images from slide
+                        if shape.shape_type == 13:  # Picture shape type
+                            try:
+                                image_data = shape.image.blob
+                                img = Image.open(io.BytesIO(image_data))
+                                image_text = doc_processor.extract_text_from_image(img)
+                                
+                                image_info = {
+                                    'id': f"{document_id}_pptx_slide_{slide_num}_img_{len(extracted_images)}",
+                                    'page': slide_num,
+                                    'data': base64.b64encode(image_data).decode('utf-8'),
+                                    'format': 'png',
+                                    'text_content': image_text['text'],
+                                    'languages': image_text['languages']
+                                }
+                                extracted_images.append(image_info)
+                                text_lines.append(f"[Image Text]: {image_text['text']}")
+                            except Exception as e:
+                                logger.warning(f"Failed to extract image from PPTX slide {slide_num}: {str(e)}")
+                    
+                    text_lines.append("")
+                
+                extracted_text = '\n'.join(text_lines)
+                doc_processor.extracted_images[document_id] = extracted_images
+                if extracted_images:
+                    doc_processor.save_images_to_database(document_id, extracted_images)
+            else:
+                # For older PPT files, only extract text (limited support)
+                extracted_text = "PPT file detected. Please convert to PPTX format for better text and image extraction."
+                extracted_images = []
+            
+            languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
+            
+        elif file_extension in ['.xls', '.xlsx', '.csv']:
+            # Process Excel/CSV document
+            extracted_images = []  # Excel files typically don't contain extractable images in the same way
+            
+            try:
+                if file_extension == '.csv':
+                    # Handle CSV files
+                    df = pd.read_csv(file_path)
+                    extracted_text = f"CSV Data ({len(df)} rows, {len(df.columns)} columns):\n\n"
+                    extracted_text += "Column Headers: " + ", ".join(df.columns) + "\n\n"
+                    extracted_text += df.to_string(max_rows=100)  # Limit to first 100 rows
+                    
+                elif file_extension == '.xlsx':
+                    # Handle modern Excel files
+                    workbook = openpyxl.load_workbook(file_path, data_only=True)
+                    text_lines = []
+                    
+                    for sheet_name in workbook.sheetnames:
+                        sheet = workbook[sheet_name]
+                        text_lines.append(f"Sheet: {sheet_name}")
+                        
+                        # Extract text from cells
+                        for row in sheet.iter_rows(values_only=True):
+                            row_text = []
+                            for cell_value in row:
+                                if cell_value is not None:
+                                    row_text.append(str(cell_value))
+                            if row_text:
+                                text_lines.append("\t".join(row_text))
+                        text_lines.append("")
+                    
+                    extracted_text = '\n'.join(text_lines)
+                    
+                elif file_extension == '.xls':
+                    # Handle older Excel files
+                    workbook = xlrd.open_workbook(file_path)
+                    text_lines = []
+                    
+                    for sheet_idx in range(workbook.nsheets):
+                        sheet = workbook.sheet_by_index(sheet_idx)
+                        text_lines.append(f"Sheet: {sheet.name}")
+                        
+                        for row_idx in range(sheet.nrows):
+                            row_text = []
+                            for col_idx in range(sheet.ncols):
+                                cell_value = sheet.cell_value(row_idx, col_idx)
+                                if cell_value:
+                                    row_text.append(str(cell_value))
+                            if row_text:
+                                text_lines.append("\t".join(row_text))
+                        text_lines.append("")
+                    
+                    extracted_text = '\n'.join(text_lines)
+                    
+            except Exception as e:
+                logger.error(f"Excel/CSV extraction error: {str(e)}")
+                extracted_text = f"Error processing {file_extension.upper()} file: {str(e)}"
+            
+            languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
+            
+        elif file_extension in ['.txt', '.rtf']:
+            # Process plain text files
+            extracted_images = []
+            
+            try:
+                with open(file_path, 'r', encoding='utf-8') as file:
+                    extracted_text = file.read()
+            except UnicodeDecodeError:
+                # Try with different encoding
+                try:
+                    with open(file_path, 'r', encoding='latin-1') as file:
+                        extracted_text = file.read()
+                except Exception as e:
+                    logger.error(f"Text file reading error: {str(e)}")
+                    extracted_text = f"Error reading text file: {str(e)}"
+            except Exception as e:
+                logger.error(f"Text file processing error: {str(e)}")
+                extracted_text = f"Error processing text file: {str(e)}"
+            
+            languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
+            
         else:
             # Fallback to original text extraction
-            extracted_text = processor.extract_text_from_file(file_path, mime_type)
+            extracted_text = doc_processor.extract_text_from_file(file_path, mime_type)
             extracted_images = []
             languages = [detect(extracted_text)] if extracted_text.strip() else ['en']
         
-        if not extracted_text.strip():
-            return jsonify({'error': 'No text content found in document'}), 400
+        # If no text was extracted (common for images with poor OCR), use a safe fallback
+        if not extracted_text or not extracted_text.strip():
+            logger.warning("No text content found - using fallback text for analysis")
+            if file_extension in ['.jpg', '.jpeg', '.png', '.bmp', '.tiff']:
+                extracted_text = "Image document with no OCR text available. Analyze the visual content contextually for document type, sensitivity, and audience roles."
+            else:
+                extracted_text = "Document content not directly extractable. Provide general analysis based on filename and metadata."
+            if not languages:
+                languages = ['en']
         
         logger.info(f"Extracted {len(extracted_text)} characters and {len(extracted_images)} images")
         logger.info(f"Languages detected: {languages}")
         
         # Generate AI analysis
         analysis = processor.generate_ai_analysis(extracted_text)
-        
+        logger.info(f"AI analysis before normalization: {analysis.get('recommended_roles', {}).get('confidence', 'MISSING')}")
+
+        # Normalize analysis to guarantee recommended_roles.confidence always exists and is sane
+        analysis = normalize_analysis(analysis)
+        logger.info(f"AI analysis after normalization: confidence={analysis.get('recommended_roles', {}).get('confidence', 'MISSING')}")
+
         # Add multilingual information to analysis
         analysis['languages_detected'] = languages
         analysis['images_extracted'] = len(extracted_images)
@@ -2340,13 +2744,25 @@ def chat_with_document():
     """Enhanced chat with entire document content using intelligent context selection."""
     try:
         data = request.json
+        logger.info(f"Received chat request: {data}")
+        
         document_text = data.get('document_text')
         user_question = data.get('question')
         language = data.get('language', 'en')
         document_id = data.get('document_id')
         
-        if not document_text or not user_question:
-            return jsonify({'error': 'document_text and question are required'}), 400
+        # Enhanced validation with logging
+        if not document_text:
+            logger.error(f"Missing document_text in chat request. Data: {data}")
+            return jsonify({'error': 'document_text is required and cannot be empty'}), 400
+            
+        if not user_question:
+            logger.error(f"Missing question in chat request. Data: {data}")
+            return jsonify({'error': 'question is required and cannot be empty'}), 400
+            
+        if len(document_text.strip()) == 0:
+            logger.error(f"Empty document_text in chat request. Document ID: {document_id}")
+            return jsonify({'error': 'Document text is empty. Please ensure the document has been processed successfully.'}), 400
         
         logger.info(f"Enhanced document chat - Document: {len(document_text)} chars, Question: {user_question[:100]}...")
         
