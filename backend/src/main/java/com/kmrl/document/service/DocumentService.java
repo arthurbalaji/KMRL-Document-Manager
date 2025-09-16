@@ -83,7 +83,8 @@ public class DocumentService {
             
             Map<String, Object> request = Map.of(
                 "file_path", document.getFilePath(),
-                "mime_type", document.getMimeType()
+                "mime_type", document.getMimeType(),
+                "document_id", document.getId().toString()
             );
 
             @SuppressWarnings("unchecked")

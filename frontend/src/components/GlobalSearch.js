@@ -18,6 +18,7 @@ import { useTranslation } from 'react-i18next';
 import { useAuth } from '../contexts/AuthContext';
 import api from '../services/api';
 import { useNavigate } from 'react-router-dom';
+import ChatImageDisplay from './ChatImageDisplay';
 
 const GlobalSearch = () => {
   const { t, i18n } = useTranslation();
@@ -115,7 +116,8 @@ const GlobalSearch = () => {
         type: 'ai',
         content: response.data.answer,
         timestamp: new Date().toISOString(),
-        relevantDocuments: response.data.relevant_documents || []
+        relevantDocuments: response.data.relevant_documents || [],
+        relevantImages: response.data.relevant_images || []
       }]);
 
       // Update relevant documents for display
@@ -290,6 +292,20 @@ const GlobalSearch = () => {
                                 </button>
                               ))}
                             </div>
+                          </div>
+                        )}
+                        
+                        {/* Show relevant images for AI responses */}
+                        {message.type === 'ai' && message.relevantImages && message.relevantImages.length > 0 && (
+                          <div className="mt-3 pt-3 border-t border-gray-200">
+                            <p className={`text-xs text-gray-600 mb-2 font-medium ${language === 'ml' ? 'font-malayalam' : ''}`}>
+                              {language === 'ml' ? 'പ്രസക്തമായ ചിത്രങ്ങൾ:' : 'Relevant Images:'}
+                            </p>
+                            <ChatImageDisplay 
+                              images={message.relevantImages} 
+                              documentId={null} // For global chat, handle multiple document IDs within component
+                              isGlobalChat={true}
+                            />
                           </div>
                         )}
                         

@@ -603,7 +603,7 @@ const DocumentView = ({ document, onBack, showChat = true }) => {
                         <p className="text-sm leading-relaxed whitespace-pre-wrap">{message.content}</p>
                         {message.images && message.images.length > 0 && (
                           <div className="mt-3">
-                            <ChatImageDisplay images={message.images} />
+                            <ChatImageDisplay images={message.images} documentId={document?.id} />
                           </div>
                         )}
                         <p className="text-xs opacity-70 mt-2">
