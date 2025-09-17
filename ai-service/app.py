@@ -4,6 +4,26 @@ import json
 import traceback
 import hashlib
 from datetime import datetime
+
+# Valid KMRL roles - must match backend Role enum exactly
+VALID_KMRL_ROLES = ['LEADERSHIP', 'HR', 'FINANCE', 'ENGINEER', 'ADMIN']
+
+def validate_and_filter_roles(roles_list):
+    """Filter AI-suggested roles to only include valid KMRL roles."""
+    if not isinstance(roles_list, list):
+        return ['LEADERSHIP']
+    
+    original_roles = roles_list.copy()
+    valid_roles = [role for role in roles_list if role in VALID_KMRL_ROLES]
+    
+    # Log any invalid roles that were filtered out
+    invalid_roles = [role for role in original_roles if role not in VALID_KMRL_ROLES]
+    if invalid_roles:
+        logger.warning(f"Filtered out invalid roles from AI response: {invalid_roles}")
+        logger.info(f"Valid roles after filtering: {valid_roles}")
+    
+    return valid_roles if valid_roles else ['LEADERSHIP']
+
 def clamp01(x: float) -> float:
     try:
         # Ensure confidence is never zero - minimum of 0.1 (10%)
@@ -35,6 +55,9 @@ def normalize_analysis(analysis: dict) -> dict:
 
         rec = analysis.get('recommended_roles') or {}
         roles = rec.get('roles') or ['LEADERSHIP']
+        # Validate and filter roles to only include valid KMRL roles
+        roles = validate_and_filter_roles(roles)
+        
         conf = rec.get('confidence', 0.75)
         logger.info(f"Original confidence from AI: {conf} (type: {type(conf)})")
         
@@ -2017,14 +2040,14 @@ class DocumentProcessor:
                 Text:
                 {chunk['text'][:3500]}  # Use larger chunk for analysis
                 
-                Extract and return JSON:
+                Extract and return JSON (use only valid KMRL roles: LEADERSHIP, HR, FINANCE, ENGINEER, ADMIN):
                 {{
                     "section_summary": "Summary of this section's content",
                     "key_topics": ["topic1", "topic2"],
                     "entities": ["entity1", "entity2"],
                     "document_type_indicators": ["contract", "policy"],
                     "sensitivity_indicators": ["confidential", "internal"],
-                    "role_relevance": ["LEADERSHIP", "HR"],
+                    "role_relevance": ["LEADERSHIP", "HR", "FINANCE", "ENGINEER", "ADMIN"],
                     "important_details": ["detail1", "detail2"]
                 }}
                 
@@ -2102,6 +2125,9 @@ class DocumentProcessor:
             - Sensitivity indicators: {', '.join(set(combined_insights['sensitivity_indicators']))}
             
             Create final analysis STRICTLY in JSON format (no prose). IMPORTANT: Always include a numeric confidence between 0 and 1 under recommended_roles.confidence. If unsure, estimate reasonably based on evidence.
+            
+            CRITICAL: For recommended_roles.roles, you MUST ONLY use these exact values: LEADERSHIP, HR, FINANCE, ENGINEER, ADMIN. Do not create or suggest any other role names.
+            
             {{
                 "summary_en": "Comprehensive summary covering all analyzed sections",
                 "summary_ml": "Malayalam summary (if applicable)",
@@ -2111,7 +2137,7 @@ class DocumentProcessor:
                 "document_type": "contract|policy|report|invoice|memo|other",
                 "key_entities": ["entity1", "entity2"],
                 "recommended_roles": {{
-                    "roles": ["LEADERSHIP", "HR", "FINANCE", "ENGINEER"],
+                    "roles": ["LEADERSHIP", "HR", "FINANCE", "ENGINEER", "ADMIN"],
                     "confidence": 0.85,
                     "reasoning": "Explanation based on full document analysis"
                 }},
