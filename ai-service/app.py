@@ -3092,7 +3092,7 @@ def global_chat():
         
         # Get all relevant documents with full content for comprehensive analysis
         query = f"""
-            SELECT id, filename, content, summary_en, summary_ml, tags, embeddings, 
+            SELECT id, filename, extracted_text, summary_en, summary_ml, tags, embeddings, 
                    allowed_roles, sensitivity_level, status,
                    created_at, file_size
             FROM documents 
@@ -3125,8 +3125,8 @@ def global_chat():
         is_listing_query = any(keyword in user_question.lower() for keyword in listing_keywords)
         
         # Translate question for better keyword matching
-        question_en = user_question if language == 'en' else processor.translate_text(user_question, 'en')
-        question_ml = user_question if language == 'ml' else processor.translate_text(user_question, 'ml')
+        question_en = user_question if language == 'en' else doc_processor.translate_text(user_question, 'en')
+        question_ml = user_question if language == 'ml' else doc_processor.translate_text(user_question, 'ml')
         question_keywords = set((question_en + ' ' + question_ml).lower().split())
         
         for doc in documents:
@@ -3156,10 +3156,10 @@ def global_chat():
                 similarity = 0.0
             
             # For non-listing queries, analyze full document content for better relevance
-            if not is_listing_query and doc['content'] and similarity > 0.05:
+            if not is_listing_query and doc['extracted_text'] and similarity > 0.05:
                 try:
                     # Create chunks from the full document content
-                    chunks = chunk_processor.create_intelligent_chunks(doc['content'])
+                    chunks = chunk_processor.create_intelligent_chunks(doc['extracted_text'])
                     
                     # Find relevant chunks within this document
                     relevant_chunks = []
